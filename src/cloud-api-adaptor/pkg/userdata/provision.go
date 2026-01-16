@@ -27,8 +27,10 @@ const (
 	AzureImdsUrl         = "http://169.254.169.254/metadata/instance/compute?api-version=2021-01-01"
 	AzureUserDataImdsUrl = "http://169.254.169.254/metadata/instance/compute/userData?api-version=2021-01-01&format=text"
 	// Ref: https://cloud.google.com/compute/docs/storing-retrieving-metadata
-	GcpImdsUrl         = "http://metadata.google.internal/computeMetadata/v1/instance"
-	GcpUserDataImdsUrl = "http://metadata.google.internal/computeMetadata/v1/instance/attributes/user-data"
+	// Use IP address instead of metadata.google.internal to avoid DNS resolution issues
+	// on some GCP network configurations (especially with squashfs root filesystem)
+	GcpImdsUrl         = "http://169.254.169.254/computeMetadata/v1/instance"
+	GcpUserDataImdsUrl = "http://169.254.169.254/computeMetadata/v1/instance/attributes/user-data"
 	// Ref: https://www.alibabacloud.com/help/en/ecs/user-guide/customize-the-initialization-configuration-for-an-instance
 	AlibabaCloudImdsUrl         = "http://100.100.100.200/latest/dynamic/instance-identity/document"
 	AlibabaCloudUserDataImdsUrl = "http://100.100.100.200/latest/user-data"

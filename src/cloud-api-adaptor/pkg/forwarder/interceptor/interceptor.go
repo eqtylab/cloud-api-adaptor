@@ -22,9 +22,11 @@ import (
 )
 
 const (
-	volumeTargetPathKey = "io.confidentialcontainers.org.peerpodvolumes.target_path"
-	volumeCheckInterval = 5 * time.Second
-	volumeCheckTimeout  = 3 * time.Minute
+	volumeTargetPathKey    = "io.confidentialcontainers.org.peerpodvolumes.target_path"
+	volumeCheckInterval    = 5 * time.Second
+	volumeCheckTimeout     = 3 * time.Minute
+	fallbackResolvConfPath = "/etc/resolv.conf"
+	fallbackDNSEnvVar      = "CAA_FALLBACK_DNS"
 )
 
 var logger = log.New(log.Writer(), "[forwarder/interceptor] ", log.LstdFlags|log.Lmsgprefix)
@@ -78,6 +80,63 @@ func NewInterceptor(agentSocket, nsPath string) Interceptor {
 		Redirector: redirector,
 		nsPath:     nsPath,
 	}
+}
+
+func parseDNSServersFromList(entries []string) []string {
+	servers := make([]string, 0, len(entries))
+	seen := make(map[string]struct{})
+
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if net.ParseIP(entry) == nil {
+			logger.Printf("invalid DNS entry: %q", entry)
+			continue
+		}
+		if _, ok := seen[entry]; ok {
+			continue
+		}
+		seen[entry] = struct{}{}
+		servers = append(servers, entry)
+	}
+
+	return servers
+}
+
+func dnsServersFromResolvConf() []string {
+	data, err := os.ReadFile(fallbackResolvConfPath)
+	if err != nil {
+		logger.Printf("failed to read %s for fallback DNS: %v", fallbackResolvConfPath, err)
+		return nil
+	}
+
+	entries := make([]string, 0)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "nameserver" {
+			entries = append(entries, fields[1])
+		}
+	}
+
+	return parseDNSServersFromList(entries)
+}
+
+func fallbackDNSServers() []string {
+	env := strings.TrimSpace(os.Getenv(fallbackDNSEnvVar))
+	if env == "" {
+		return dnsServersFromResolvConf()
+	}
+
+	parts := strings.FieldsFunc(env, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	})
+	return parseDNSServersFromList(parts)
 }
 
 func (i *interceptor) CreateContainer(ctx context.Context, req *pb.CreateContainerRequest) (*emptypb.Empty, error) {
@@ -196,16 +255,21 @@ func (i *interceptor) CreateSandbox(ctx context.Context, req *pb.CreateSandboxRe
 
 	logger.Printf("CreateSandbox: hostname:%s sandboxId:%s", req.Hostname, req.SandboxId)
 
-	if len(req.Dns) > 0 {
+	if len(req.Dns) == 0 {
+		req.Dns = fallbackDNSServers()
+		if len(req.Dns) == 0 {
+			logger.Print("    dns: <empty>")
+		} else {
+			logger.Print("    dns (fallback):")
+			for _, d := range req.Dns {
+				logger.Printf("        %s", d)
+			}
+		}
+	} else {
 		logger.Print("    dns:")
 		for _, d := range req.Dns {
 			logger.Printf("        %s", d)
 		}
-
-		logger.Print("      Eliminated the DNS setting above from CreateSandboxRequest to stop updating /etc/resolv.conf on the peer pod VM")
-		logger.Print("      See https://github.com/confidential-containers/cloud-api-adaptor/issues/98 for the details.")
-		logger.Println()
-		req.Dns = nil
 	}
 
 	res, err := i.Redirector.CreateSandbox(ctx, req)
